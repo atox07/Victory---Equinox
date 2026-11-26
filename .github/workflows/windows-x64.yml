@@ -35,7 +35,7 @@ jobs:
       - name: Check workspace and diagnostics paths
         run: cargo check --locked --workspace --all-features --all-targets --target $env:TARGET
       - name: Run workspace tests
-        run: cargo test --locked --release --workspace --target $env:TARGET
+        run: cargo test --locked --release --workspace --target $env:TARGET -- --test-threads=1 --nocapture
       - name: Build release
         run: cargo build --release --locked -p victory --target $env:TARGET
       - name: Build instrumented release
