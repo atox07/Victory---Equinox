@@ -1139,7 +1139,11 @@ void main() {
             std::ptr::copy_nonoverlapping(crate::host::block_mask(2, &second).as_ptr(), masks_ptr.add(1536), 512);
             warp.list.SetComputeRootSignature(&patch.root);
             warp.list.SetPipelineState(&patch.pso);
-            let constants = [BLOCK as u32, 1024u32];
+            // CARD_PATCH now takes a table of (destination byte offset,
+            // mask byte offset), not a contiguous range and first mask.
+            let table = [BLOCK as u32, 1024u32, (2 * BLOCK) as u32, 1536u32];
+            std::ptr::copy_nonoverlapping(table.as_ptr(), masks_ptr.cast::<u32>(), table.len());
+            let constants = [0u32, 2u32];
             warp.list.SetComputeRoot32BitConstants(0, 2, constants.as_ptr().cast(), 0);
             warp.list.SetComputeRootShaderResourceView(1, from_gpu);
             warp.list.SetComputeRootShaderResourceView(2, masks_gpu);
@@ -1202,7 +1206,9 @@ void main() {
                 warp.list.SetComputeRootShaderResourceView(1, now_gpu);
                 warp.list.SetComputeRootUnorderedAccessView(2, hashes_gpu);
                 warp.list.SetComputeRootUnorderedAccessView(3, differs_gpu);
-                warp.list.Dispatch(1, 1, 1);
+                // CARD_COMPARE assigns one piece to each group. Hash every
+                // piece, including the short tail, before running CARD_FETCH.
+                warp.list.Dispatch(pieces, 1, 1);
                 if mode == 2 {
                     warp.list.ResourceBarrier(&[uav_barrier()]);
                     warp.list.SetComputeRootSignature(&fetch.root);

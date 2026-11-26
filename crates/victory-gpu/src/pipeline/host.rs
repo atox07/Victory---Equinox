@@ -1089,8 +1089,8 @@ mod tests {
         // The software adapter says it takes the test and draws through it
         // all the same (depth 0.5 passes bounds of [0.6, 1.0]): the test is
         // for a card.
-        if crate::host::on_warp() {
-            eprintln!("the software adapter does not apply depth bounds; skipped");
+        if crate::host::host_is_software(host) {
+            eprintln!("the actual software adapter cannot validate depth bounds; skipped");
             return;
         }
         let Some(dxc) = dxc() else {
@@ -1114,7 +1114,7 @@ mod tests {
                 DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
                 DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
                 DepthBoundsTestEnable: true.into(),
-                ..Default::default()
+                ..g.depth1()
             },
         );
         // SAFETY: `sub` is a complete subobject 21.

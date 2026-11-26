@@ -1345,6 +1345,10 @@ fn guards_read() -> std::sync::RwLockReadGuard<'static, Guards> {
 /// they were last guarded (all of a block's pages), guarding them again
 /// before the caller copies them. `None` if the memory is not a view.
 fn guard(start: usize, end: usize) -> Option<Vec<usize>> {
+    guard_with_policy(start, end, guard_hot(), guard_rest())
+}
+
+fn guard_with_policy(start: usize, end: usize, hot: u64, rest: u64) -> Option<Vec<usize>> {
     // A range whose first block the guards hold already (read-only by our
     // hand, or noted absent) is a view: no question to Windows. The
     // question walks the page tables to the end of the pages that share the
@@ -1360,8 +1364,6 @@ fn guard(start: usize, end: usize) -> Option<Vec<usize>> {
         count(4, 1);
         return Some(Vec::new());
     }
-    let hot = guard_hot();
-    let rest = guard_rest();
     let frame = crate::queue::presented();
     if !ask && first < last {
         // (Neptune) Clean blocks, blocks left open and blocks that are still not committed,
@@ -2341,15 +2343,20 @@ mod tests {
         title_memory_remapped(p + BLOCK, BLOCK);
         // The range begins in the placeholder, its middle block is a view.
         assert!(is_view(p, p + 3 * BLOCK));
-        assert_eq!(guard(p, p + 3 * BLOCK), Some(all));
-        assert_eq!(guard(p, p + 3 * BLOCK), Some(Vec::new()), "nothing written since");
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, 0), Some(all));
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, 0), Some(Vec::new()), "nothing written since");
         // SAFETY: inside the mapped middle block.
         unsafe { ((p + BLOCK + 8) as *mut u8).write_volatile(1) };
-        assert_eq!(guard(p, p + 3 * BLOCK), Some(pages(1).collect()));
+        // Exercise the intentional rest policy independently of CI timing:
+        // a resting block must keep being reported until re-guarded.
+        rest_note((p + BLOCK) / BLOCK);
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, u64::MAX), Some(pages(1).collect()));
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, u64::MAX), Some(pages(1).collect()));
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, 0), Some(pages(1).collect()));
         let first = map(0);
         title_memory_remapped(p, BLOCK);
-        assert_eq!(guard(p, p + 3 * BLOCK), Some(pages(0).collect()));
-        assert_eq!(guard(p, p + 3 * BLOCK), Some(Vec::new()));
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, 0), Some(pages(0).collect()));
+        assert_eq!(guard_with_policy(p, p + 3 * BLOCK, 0, 0), Some(Vec::new()));
         // Memory of ours that is no view stays none.
         let mut local = [0u8; 16];
         let at = local.as_mut_ptr() as usize;

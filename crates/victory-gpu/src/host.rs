@@ -239,11 +239,15 @@ pub(crate) fn vram_idle_ms_by_room(video_memory: Option<[u64; 4]>, room: bool) -
 /// only under real physical-RAM or near-OOM VRAM pressure (avoids buffer
 /// destroy/recreate thrashing on 8 GB VRAM / 16 GB RAM PCs).
 pub(crate) fn ram_idle_ms(avail_phys: Option<u64>) -> u64 {
+    ram_idle_ms_for_pressure(avail_phys, host().and_then(|h| h.video_memory()))
+}
+
+fn ram_idle_ms_for_pressure(avail_phys: Option<u64>, video_memory: Option<[u64; 4]>) -> u64 {
     const GIB: u64 = 1024 * 1024 * 1024;
     const NORMAL_MS: u64 = 10_000;
     const MODERATE_MS: u64 = 5_000;
     const HIGH_MS: u64 = 2_000;
-    if let Some([budget, used, ..]) = host().and_then(|h| h.video_memory()) {
+    if let Some([budget, used, ..]) = video_memory {
         if budget > 0 && used.saturating_mul(100) >= budget.saturating_mul(94) {
             return HIGH_MS;
         }
@@ -799,6 +803,19 @@ fn create() -> windows::core::Result<Host> {
             presenter: Mutex::new(None),
             adapter,
         })
+    }
+}
+
+/// The actual adapter backing this host, not the requested diagnostics mode.
+/// The default D3D12 device may be a software adapter on CI.
+#[cfg(test)]
+pub(crate) fn host_is_software(host: &Host) -> bool {
+    // SAFETY: a plain query of the adapter that owns this device.
+    unsafe {
+        host.adapter.as_ref()
+            .and_then(|adapter| adapter.cast::<IDXGIAdapter1>().ok())
+            .and_then(|adapter| adapter.GetDesc1().ok())
+            .is_some_and(|desc| desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
     }
 }
 
@@ -10416,18 +10433,21 @@ mod batch {   // Batch::texture_due lives here; `mod tests` is already taken at 
 
     #[test]
     fn ram_idle_ms_scales_with_pressure() {
-        use super::ram_idle_ms;
+        use super::ram_idle_ms_for_pressure;
         let gib = 1024 * 1024 * 1024;
-        // Normal (>= 4 GiB)
-        assert_eq!(ram_idle_ms(Some(8 * gib)), 10_000);
-        assert_eq!(ram_idle_ms(Some(4 * gib)), 10_000);
-        // Moderate (2 GiB..4 GiB)
-        assert_eq!(ram_idle_ms(Some(4 * gib - 1)), 5_000);
-        assert_eq!(ram_idle_ms(Some(2 * gib)), 5_000);
-        // High (< 2 GiB)
-        assert_eq!(ram_idle_ms(Some(2 * gib - 1)), 2_000);
-        assert_eq!(ram_idle_ms(Some(0)), 2_000);
-        // Missing falls back to normal
-        assert_eq!(ram_idle_ms(None), 10_000);
+        let idle = |available| ram_idle_ms_for_pressure(available, None);
+        // Normal (>= 3 GiB), moderate (1..3 GiB), high (< 1 GiB).
+        assert_eq!(idle(Some(8 * gib)), 10_000);
+        assert_eq!(idle(Some(3 * gib)), 10_000);
+        assert_eq!(idle(Some(3 * gib - 1)), 5_000);
+        assert_eq!(idle(Some(gib)), 5_000);
+        assert_eq!(idle(Some(gib - 1)), 2_000);
+        assert_eq!(idle(Some(0)), 2_000);
+        assert_eq!(idle(None), 10_000);
+        // The live runtime also overrides the RAM policy at 94% VRAM pressure.
+        assert_eq!(ram_idle_ms_for_pressure(Some(8 * gib), Some([100, 93, 0, 0])), 10_000);
+        assert_eq!(ram_idle_ms_for_pressure(Some(8 * gib), Some([100, 94, 0, 0])), 2_000);
+        assert_eq!(ram_idle_ms_for_pressure(None, Some([100, 101, 0, 0])), 2_000);
+        assert_eq!(ram_idle_ms_for_pressure(None, Some([0, 100, 0, 0])), 10_000);
     }
 }

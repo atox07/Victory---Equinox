@@ -4182,14 +4182,15 @@ mod tests {
     #[test]
     fn spans_say_the_next_start_and_the_lowest_level_viewed() {
         let mut spans = Spans::default();
-        // A 512x512 texture of 0x56000 bytes viewed from levels 3 and 1,
-        // and the next one 0x6000 after it (run 188).
-        let desc = [0u32; 14];
-        spans.note(1, 0x1_0000, 0x1_0000 + 0x5_6000, &desc, true);
+        // Resident mip spans fit before the next packed neighbour. The
+        // larger hypothetical full-texture range is used for next_start.
+        // A newer overlapping span would invalidate the old slots instead.
+        let desc = [3, 0, 0, 0, 512, 0, 512, 0x8_0001, 98, 1, 0, 0x105, 0, 0];
+        assert!(spans.note(1, 0x1_0000, 0x1_3000, &desc, true).is_empty());
         spans.shows(1, 3);
-        spans.note(2, 0x1_0000, 0x1_0000 + 0x5_6000, &desc, true);
+        assert!(spans.note(2, 0x1_0000, 0x1_6000, &desc, true).is_empty());
         spans.shows(2, 1);
-        spans.note(3, 0x1_6000, 0x1_6000 + 0x5_6000, &desc, true);
+        assert!(spans.note(3, 0x1_6000, 0x1_6000 + 0x5_6000, &desc, true).is_empty());
         assert_eq!(spans.next_start(0x1_0000, 0x1_0000 + 0x5_6000), Some(0x1_6000));
         assert_eq!(spans.next_start(0x1_6000, 0x1_6000 + 0x5_6000), None);
         assert_eq!(spans.first_viewed(0x1_0000), Some(1));
@@ -4198,6 +4199,10 @@ mod tests {
         // The view from level 1 goes: the texture is viewed from level 3.
         spans.forget(2);
         assert_eq!(spans.first_viewed(0x1_0000), Some(3));
+        // A newer overlapping texture invalidates the remaining old view.
+        assert_eq!(spans.note(4, 0x1_2000, 0x1_6000, &desc, true), [1]);
+        assert_eq!(spans.first_viewed(0x1_0000), None);
+        assert!(spans.slots_at(0x1_0000).is_empty());
     }
 
     /// Views of one placed texture are told from views of others by the
