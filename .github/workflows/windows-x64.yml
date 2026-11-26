@@ -1,0 +1,87 @@
+name: Equinox / Windows x64 tester ZIP
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 115
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load the pinned Rust MSVC toolchain
+        run: |
+          $toolchain = (Select-String -Path rust-toolchain.toml -Pattern 'channel\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal --target $env:TARGET
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustc -Vv
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo -V
+      - name: Check settings and diagnostics on synthetic data
+        run: ./tests/Test-Tools.ps1
+      - name: Check settings on Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/Test-Tools.ps1
+      - name: Enforce text-only source policy
+        run: cargo run --locked -p xtask -- policy
+      - name: Check workspace and diagnostics paths
+        run: cargo check --locked --workspace --all-features --all-targets --target $env:TARGET
+      - name: Run workspace tests
+        run: cargo test --locked --release --workspace --target $env:TARGET
+      - name: Build release
+        run: cargo build --release --locked -p victory --target $env:TARGET
+      - name: Build instrumented release
+        run: cargo build --profile diag --locked -p victory --features diagnostics --target $env:TARGET
+      - name: Assemble pinned redistributable and tester package
+        run: |
+          ./tools/Package.ps1 -ReleaseExe "target/$env:TARGET/release/victory.exe" -DiagnosticExe "target/$env:TARGET/diag/victory.exe" -OutputDir "$env:RUNNER_TEMP/tester-out"
+      - name: Smoke-test the packaged binaries and profile entry point
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP 'tester-smoke'
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP/tester-out/VIctory-Equinox-Windows-x64.zip" -DestinationPath $folder
+          foreach ($file in 'victory.exe','victory-diagnostics.exe') {
+            & (Join-Path $folder $file) --help
+            if ($LASTEXITCODE) { throw "$file failed the CLI smoke test ($LASTEXITCODE)" }
+          }
+          $profile = & (Join-Path $folder 'Launch.ps1') -ShowSettings | ConvertFrom-Json
+          if ($profile.profile -ne 'MID-RANGE') { throw 'Packaged profile failed to load' }
+          $manifest = Get-Content -LiteralPath (Join-Path $folder 'BUILD.json') -Raw | ConvertFrom-Json
+          foreach ($entry in $manifest.files.PSObject.Properties) {
+            $file = Join-Path $folder $entry.Name
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Value) { throw "Packaged file hash mismatch: $($entry.Name)" }
+          }
+          $actual = @(Get-ChildItem -LiteralPath $folder -Recurse -File).Count
+          if ($actual -ne (@($manifest.files.PSObject.Properties).Count + 1)) { throw 'Unexpected files in tester package.' }
+      - name: Build synthetic launcher probe
+        run: |
+          rustc --edition 2024 --target $env:TARGET tests/fixtures/launcher-probe.rs -o "$env:RUNNER_TEMP/launcher-probe.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Test packaged launcher with spaces (PowerShell 7)
+        run: ./tests/Test-Launch.ps1 -PackageDir "$env:RUNNER_TEMP/tester-smoke" -ProbeExe "$env:RUNNER_TEMP/launcher-probe.exe"
+      - name: Test packaged launcher with spaces (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./tests/Test-Launch.ps1 -PackageDir "$env:RUNNER_TEMP/tester-smoke" -ProbeExe "$env:RUNNER_TEMP/launcher-probe.exe"
+      - name: Archive the matching source revision
+        run: |
+          git archive --format=zip --prefix=VIctory-Equinox/ --output="$env:RUNNER_TEMP/tester-out/VIctory-Equinox-Source.zip" HEAD
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VIctory-Equinox-Windows-x64
+          path: ${{ runner.temp }}/tester-out/VIctory-Equinox-Windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VIctory-Equinox-Source
+          path: ${{ runner.temp }}/tester-out/VIctory-Equinox-Source.zip
+          if-no-files-found: error
+          compression-level: 0
