@@ -1086,11 +1086,15 @@ mod tests {
             eprintln!("no host depth bounds support; skipped");
             return;
         }
-        // The software adapter says it takes the test and draws through it
-        // all the same (depth 0.5 passes bounds of [0.6, 1.0]): the test is
-        // for a card.
-        if crate::host::host_is_software(host) {
-            eprintln!("the actual software adapter cannot validate depth bounds; skipped");
+        // The adapter that owns the device, from DXGI by LUID. Software and
+        // virtual adapters (WARP, the Basic Render Driver, Hyper-V Video on
+        // CI VMs) report `DepthBoundsTestSupported` yet refuse the pipeline
+        // (E_INVALIDARG) or draw through the bounds: the test is for a card.
+        // A card that reports support and refuses still fails the test.
+        let info = crate::host::host_adapter_info(host);
+        eprintln!("depth bounds test adapter: {info:?}");
+        if info.as_ref().is_some_and(crate::host::adapter_is_software_like) {
+            eprintln!("software or virtual adapter cannot validate depth bounds; skipped");
             return;
         }
         let Some(dxc) = dxc() else {

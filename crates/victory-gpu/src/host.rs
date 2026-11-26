@@ -806,17 +806,51 @@ fn create() -> windows::core::Result<Host> {
     }
 }
 
-/// The actual adapter backing this host, not the requested diagnostics mode.
-/// The default D3D12 device may be a software adapter on CI.
+/// What DXGI says of the adapter behind the host device (tests only).
 #[cfg(test)]
-pub(crate) fn host_is_software(host: &Host) -> bool {
+#[derive(Debug, Clone)]
+pub(crate) struct AdapterInfo {
+    pub(crate) name: String,
+    pub(crate) vendor: u32,
+    pub(crate) device: u32,
+    pub(crate) flags: u32,
+}
+
+/// The adapter that actually owns this host's device (by LUID), not the
+/// requested diagnostics mode; `None` when DXGI cannot say.
+#[cfg(test)]
+pub(crate) fn host_adapter_info(host: &Host) -> Option<AdapterInfo> {
     // SAFETY: a plain query of the adapter that owns this device.
-    unsafe {
-        host.adapter.as_ref()
+    let desc = unsafe {
+        host.adapter
+            .as_ref()
             .and_then(|adapter| adapter.cast::<IDXGIAdapter1>().ok())
             .and_then(|adapter| adapter.GetDesc1().ok())
-            .is_some_and(|desc| desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0)
-    }
+    }?;
+    let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
+    Some(AdapterInfo {
+        name: String::from_utf16_lossy(&desc.Description[..len]),
+        vendor: desc.VendorId,
+        device: desc.DeviceId,
+        flags: desc.Flags,
+    })
+}
+
+/// Whether an adapter is a software or virtual one that cannot stand in for
+/// a card: flagged software or remote, or a Microsoft one (vendor 0x1414:
+/// WARP, the Basic Render Driver, "Microsoft Hyper-V Video" on CI VMs, which
+/// may carry no software flag at all yet reports features it does not
+/// implement), or named as such.
+#[cfg(test)]
+pub(crate) fn adapter_is_software_like(info: &AdapterInfo) -> bool {
+    const MICROSOFT: u32 = 0x1414;
+    let flagged = DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 | DXGI_ADAPTER_FLAG_REMOTE.0 as u32;
+    let name = info.name.to_ascii_lowercase();
+    info.flags & flagged != 0
+        || info.vendor == MICROSOFT
+        || ["basic render", "warp", "hyper-v", "remote"]
+            .iter()
+            .any(|n| name.contains(n))
 }
 
 /// Whether the host device is the software adapter (WARP): diagnostics
@@ -885,6 +919,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn software_like_adapters_are_told_from_cards() {
+        let a = |name: &str, vendor, flags| AdapterInfo {
+            name: name.into(),
+            vendor,
+            device: 0,
+            flags,
+        };
+        assert!(adapter_is_software_like(&a("Microsoft Basic Render Driver", 0x1414, 0)));
+        assert!(adapter_is_software_like(&a("Microsoft Hyper-V Video", 0x1414, 0)));
+        assert!(adapter_is_software_like(&a("Anything", 0x10de, 2)));
+        assert!(adapter_is_software_like(&a("Anything", 0x10de, 1)));
+        assert!(!adapter_is_software_like(&a("NVIDIA GeForce RTX 4070", 0x10de, 0)));
+        assert!(!adapter_is_software_like(&a("AMD Radeon RX 7800 XT", 0x1002, 0)));
+    }
 
     #[test]
     fn warp_adapter_accepts_only_software() {
