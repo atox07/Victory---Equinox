@@ -812,6 +812,7 @@ fn create() -> windows::core::Result<Host> {
 pub(crate) struct AdapterInfo {
     pub(crate) name: String,
     pub(crate) vendor: u32,
+    #[allow(dead_code)] // shown in the Debug line the depth bounds test prints
     pub(crate) device: u32,
     pub(crate) flags: u32,
 }
